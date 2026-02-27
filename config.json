@@ -1,0 +1,10 @@
+{
+    "worker_concurrency": 8,
+    "base_backoff_ms": 100,
+    "max_retries": 5,
+    "queue_capacity": 1024,
+    "queue_stale_time_ms": 3000,
+    "burst_size": 128,
+    "sweeper_interval_ms": 1000,
+    "shutdown_timeout_ms": 10000
+}

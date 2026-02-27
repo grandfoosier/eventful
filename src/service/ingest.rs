@@ -1,0 +1,65 @@
+use chrono::Utc;
+use tokio::sync::{mpsc, mpsc::error::TrySendError, watch};
+
+use crate::ReserveResult;
+use crate::domain::{Event, EventRecord};
+use crate::store::MemoryStore;
+
+pub enum IngestResult {
+    QueueError(String),
+    QueueFull,
+    StoreError(String),
+    Ok(bool), // record and whether it's newly inserted
+}
+
+#[derive(Clone)]
+pub struct IngestService {
+    pub store: MemoryStore,
+    pub tx: mpsc::Sender<String>,
+    pub shutdown_tx: watch::Sender<bool>,
+}
+
+impl IngestService {
+    pub fn new(store: MemoryStore, tx: mpsc::Sender<String>, shutdown_tx: watch::Sender<bool>) -> Self {
+        Self { store, tx, shutdown_tx }
+    }
+
+    pub async fn ingest(&self, event: Event) -> (EventRecord, IngestResult) {
+        // Try to insert into store. If it already exists, it's not an error, just return existing record.
+        let (record, insert_result) = self.store.insert_if_absent(event).await;
+        let inserted = match insert_result {
+            Ok(inserted) => inserted,
+            Err(e) => { // This means there is a hash mismatch for the same event_id, which should not happen. We treat it as an error, but still return the existing record for visibility.
+                eprintln!("Failed to insert event {}: {}", record.event.event_id, e);
+                return (record, IngestResult::StoreError(e.to_string()));
+            }
+        };
+        let event_id = record.event.event_id.clone();
+        (record, self.reserve_and_schedule(event_id, inserted).await)
+    }
+
+    // Try to reserve and enqueue if needed. If this fails, it's not a critical error, just means the event won't be processed until next retry/sweep.
+    pub async fn reserve_and_schedule(&self, event_id: String, inserted: bool) -> IngestResult {
+        match self.store.reserve_enqueue_if_needed(&event_id, Utc::now()).await {
+            ReserveResult::Noop => {
+                IngestResult::Ok(inserted) // Not an error, just means it's already being processed or doesn't need processing
+            }
+            ReserveResult::Enqueue => {
+                // If this fails, it means the handlers are not consuming from the queue, which is a problem, 
+                // but we have already marked the record as queued, so we can just return an error and let it be retried later.
+                match self.tx.try_send(event_id.clone()) {
+                    Ok(_) => IngestResult::Ok(inserted),
+                    Err(TrySendError::Closed(e)) => {
+                        eprintln!("Failed to enqueue event {}: {}", event_id, e);
+                        self.shutdown_tx.send(true).ok(); // Signal shutdown to prevent further processing, since the queue is not working
+                        IngestResult::QueueError(format!("Failed to enqueue: {}", e))
+                    },
+                    Err(TrySendError::Full(e)) => {
+                        eprintln!("Queue is full, failed to enqueue event {}: {}", event_id, e);
+                        IngestResult::QueueFull
+                    },
+                }
+            }
+        }
+    }
+}
