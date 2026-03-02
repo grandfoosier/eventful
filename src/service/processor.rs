@@ -30,7 +30,7 @@ pub async fn dispatch_loop(
     'dispatch: loop { tokio::select! {
         _ = shutdown_rx.changed() => {
             if *shutdown_rx.borrow() {
-                println!("Shutdown signal received, stopping dispatch loop");
+                tracing::info!("Shutdown signal received, stopping dispatch loop");
                 break 'dispatch;
             }
         },
@@ -41,7 +41,7 @@ pub async fn dispatch_loop(
                 tokio::select! {
                     _ = shutdown_rx_clone.changed() => {
                         if *shutdown_rx_clone.borrow() {
-                            println!("Shutdown signal received, stopping dispatch loop");
+                            tracing::info!("Shutdown signal received, stopping dispatch loop");
                             break 'dispatch;
                         }
                     },
@@ -61,15 +61,15 @@ pub async fn dispatch_loop(
                                 handler.run(id, processing_time).await;
                             });
                         },
-                        Err(e) => {
-                            eprintln!("Semaphore closed, shutting down processor pool: {}", e);
+                        Err(_) => {
+                            tracing::error!("Semaphore closed, shutting down processor pool");
                             break 'dispatch;
                         }
                     }}
                 }
             },
             None => {
-                println!("All senders dropped, shutting down dispatch loop");
+                tracing::info!("All senders dropped, shutting down dispatch loop");
                 break 'dispatch;
             }
         }}
@@ -83,29 +83,29 @@ async fn shutdown(shutdown_timeout_ms: u64, join_set: &mut JoinSet<()>) {
         Duration::from_millis(shutdown_timeout_ms), 
         join_all(join_set, &mut panics, &mut cancels)
     ).await {
-        Ok(_) => println!("All worker tasks completed gracefully"),
+        Ok(_) => tracing::info!("All worker tasks completed gracefully"),
         Err(_) => { 
             let remaining = join_set.len();
-            if remaining == 0 { println!("Shutdown timeout reached, but no worker tasks remained"); }
+            if remaining == 0 { tracing::info!("Shutdown timeout reached, but no worker tasks remained"); }
             else {
-                eprintln!("Shutdown timeout reached, aborting {} remaining worker tasks", remaining);
+                tracing::warn!(remaining_tasks = %remaining, "Shutdown timeout reached, aborting remaining worker tasks");
                 join_set.abort_all();
                 match timeout(
                     Duration::from_millis(100),
                     join_all(join_set, &mut panics, &mut cancels)
                 ).await {
-                    Ok(_) => println!("All worker tasks aborted"),
+                    Ok(_) => tracing::info!("All worker tasks aborted"),
                     Err(_) => {
                         let still_remaining = join_set.len();
-                        if still_remaining == 0 { println!("All worker tasks aborted"); }
-                        else { eprintln!("Some worker tasks did not abort in time, forcing shutdown with {} tasks remaining", still_remaining); }
+                        if still_remaining == 0 { tracing::info!("All worker tasks aborted"); }
+                        else { tracing::warn!(remaining_tasks = %still_remaining, "Some worker tasks did not abort in time, forcing shutdown with tasks remaining"); }
                     }
                 }
             }
         }
     }
-    if panics > 0 { eprintln!("{} worker tasks panicked during shutdown", panics); }
-    if cancels > 0 { eprintln!("{} worker tasks were cancelled during shutdown", cancels); }
+    if panics > 0 { tracing::error!(panics = %panics, "Some worker tasks panicked during shutdown"); }
+    if cancels > 0 { tracing::error!(cancels = %cancels, "Some worker tasks were cancelled during shutdown"); }
 }
 
 async fn join_all(join_set: &mut JoinSet<()>, panics: &mut usize, cancels: &mut usize) {
@@ -113,7 +113,7 @@ async fn join_all(join_set: &mut JoinSet<()>, panics: &mut usize, cancels: &mut 
         if let Err(join_err) = opt { 
             if join_err.is_panic() { *panics += 1; }
             else if join_err.is_cancelled() { *cancels += 1; } 
-            else { eprintln!("Worker task ended with error: {}", join_err); }
+            else { tracing::error!(error = %join_err, "Worker task ended with error"); }
         }
     }  
 }

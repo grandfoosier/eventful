@@ -37,7 +37,7 @@ impl IngestService {
         let inserted = match insert_result {
             Ok(inserted) => inserted,
             Err(e) => { // This means there is a hash mismatch for the same event_id, which should not happen. We treat it as an error, but still return the existing record for visibility.
-                eprintln!("Failed to insert event {}: {}", record.event.event_id, e);
+                tracing::error!(event_id = %record.event.event_id, error = %e, "Failed to insert event");
                 return (record, IngestResult::StoreError(e.to_string()));
             }
         };
@@ -62,12 +62,12 @@ impl IngestService {
                         IngestResult::Ok(inserted)
                     },
                     Err(TrySendError::Closed(e)) => {
-                        eprintln!("Failed to enqueue event {}: {}", event_id, e);
+                        tracing::error!(event_id = %event_id, "Failed to enqueue event");
                         self.shutdown_tx.send(true).ok(); // Signal shutdown to prevent further processing, since the queue is not working
                         IngestResult::QueueError(format!("Failed to enqueue: {}", e))
                     },
-                    Err(TrySendError::Full(e)) => {
-                        eprintln!("Queue is full, failed to enqueue event {}: {}", event_id, e);
+                    Err(TrySendError::Full(_)) => {
+                        tracing::warn!(event_id = %event_id, "Queue is full, failed to enqueue event");
                         IngestResult::QueueFull
                     },
                 }

@@ -4,9 +4,10 @@ use serde::Deserialize;
 use std::{fs, sync::Arc};
 use tokio::{net::TcpListener, signal, sync::{mpsc, watch}};
 
-use eventful::{Telemetry, http::{handlers::HttpState, routes::build_router}};
+use eventful::http::{handlers::HttpState, routes::build_router};
 use eventful::service::{dispatch_loop, IngestService, sweeper::Sweeper};
 use eventful::store::MemoryStore;
+use eventful::telemetry::{logging::init_tracing, Telemetry};
 
 #[derive(Debug, Deserialize)]
 #[serde(default)]
@@ -20,6 +21,7 @@ struct Config {
     burst_size: usize,
     sweeper_interval_ms: u64,
     shutdown_timeout_ms: u64,
+    trace_level: String,
 }
 
 impl Default for Config {
@@ -34,6 +36,7 @@ impl Default for Config {
             burst_size: 128,
             sweeper_interval_ms: 1000,
             shutdown_timeout_ms: 10000,
+            trace_level: "info".into(),
         }
     }
 }
@@ -42,6 +45,8 @@ impl Default for Config {
 async fn main() -> Result<()> {
     let content = fs::read_to_string("config.json")?;
     let config: Config = serde_json::from_str(&content)?;
+
+    init_tracing(config.trace_level, false);
     let telemetry = Telemetry::new();
     let store = MemoryStore::new(
         config.base_backoff_ms, 
@@ -65,6 +70,7 @@ async fn main() -> Result<()> {
     let router = build_router(Arc::new(app_state));
     let listener = TcpListener::bind(&config.address).await?;
 
+    tracing::info!(%config.address, "starting background processing");
     tokio::spawn({
         let store = store.clone();
         let shutdown_rx = shutdown_rx.clone();
@@ -79,11 +85,13 @@ async fn main() -> Result<()> {
             ).await
         }
     });
+    tracing::info!(%config.address, "starting queue sweeper");
     tokio::spawn({
         let shutdown_rx = shutdown_rx.clone();
         async move { sweeper.run(shutdown_rx).await; }
     });
     // axum bind and serve
+    tracing::info!(%config.address, "starting http server");
     let mut shutdown_rx_server = shutdown_rx.clone();
     serve(listener, router)
         .with_graceful_shutdown(async move {
@@ -104,5 +112,5 @@ async fn ctrl_c_signal() {
         .await
         .expect("failed to install Ctrl+C handler");
     // Optional: Add logging or cleanup code here
-    println!("Received Ctrl+C, starting graceful shutdown...");
+    tracing::info!("Received Ctrl+C, starting graceful shutdown...");
 }
