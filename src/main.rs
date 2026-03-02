@@ -4,7 +4,7 @@ use serde::Deserialize;
 use std::{fs, sync::Arc};
 use tokio::{net::TcpListener, signal, sync::{mpsc, watch}};
 
-use eventful::http::{handlers::HttpState, routes::build_router};
+use eventful::{Telemetry, http::{handlers::HttpState, routes::build_router}};
 use eventful::service::{dispatch_loop, IngestService, sweeper::Sweeper};
 use eventful::store::MemoryStore;
 
@@ -42,6 +42,7 @@ impl Default for Config {
 async fn main() -> Result<()> {
     let content = fs::read_to_string("config.json")?;
     let config: Config = serde_json::from_str(&content)?;
+    let telemetry = Telemetry::new();
     let store = MemoryStore::new(
         config.base_backoff_ms, 
         config.max_retries,
@@ -50,7 +51,7 @@ async fn main() -> Result<()> {
     );
     let (tx, rx) = mpsc::channel::<String>(config.queue_capacity);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let ingest_service = IngestService::new(store.clone(), tx, shutdown_tx.clone());
+    let ingest_service = IngestService::new(store.clone(), tx, shutdown_tx.clone(), telemetry.clone());
     let sweeper = Sweeper::new(
         store.clone(),
         ingest_service.clone(),
@@ -59,6 +60,7 @@ async fn main() -> Result<()> {
     let app_state = HttpState {
         ingest: ingest_service.clone(),
         store: ingest_service.store.clone(),
+        telemetry: telemetry.clone(),
     };
     let router = build_router(Arc::new(app_state));
     let listener = TcpListener::bind(&config.address).await?;
@@ -72,7 +74,8 @@ async fn main() -> Result<()> {
                 rx, 
                 config.worker_concurrency, 
                 config.shutdown_timeout_ms, 
-                shutdown_rx
+                shutdown_rx,
+                telemetry.clone(),
             ).await
         }
     });

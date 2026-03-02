@@ -1,3 +1,5 @@
+use prometheus::IntGauge;
+use rand::prelude::*;
 use std::sync::Arc;
 use tokio::{
     sync::{mpsc, Semaphore, watch::Receiver}, 
@@ -5,7 +7,15 @@ use tokio::{
     time::{Duration, timeout}
 };
 
-use crate::{store::MemoryStore, service::Handler};
+use crate::{Telemetry, service::Handler, store::MemoryStore};
+
+struct InflightGuard(IntGauge);
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.0.dec();
+    }
+}
 
 pub async fn dispatch_loop(
     store: MemoryStore,
@@ -13,6 +23,7 @@ pub async fn dispatch_loop(
     pool_size: usize,
     shutdown_timeout_ms: u64,
     mut shutdown_rx: Receiver<bool>,
+    telemetry: Telemetry,
 ) {
     let semaphore = Arc::new(Semaphore::new(pool_size));
     let mut join_set = JoinSet::new();
@@ -25,6 +36,7 @@ pub async fn dispatch_loop(
         },
         maybe_id = rx.recv() => { match maybe_id {
             Some(id) => {
+                telemetry.queue_channel_depth.dec();
                 let mut shutdown_rx_clone = shutdown_rx.clone();
                 tokio::select! {
                     _ = shutdown_rx_clone.changed() => {
@@ -36,10 +48,17 @@ pub async fn dispatch_loop(
                     permit = semaphore.clone().acquire_owned() => { match permit {
                         Ok(permit) => {
                             let store = store.clone();
+                            let telemetry = telemetry.clone();
+                            telemetry.processing_inflight.inc();
+                            let _guard = InflightGuard(telemetry.processing_inflight.clone());
+                            let millis;
+                            {   let mut rng = rand::rng();
+                                millis = rng.random_range(15..45); }
+                            let processing_time = Duration::from_millis(millis);
                             join_set.spawn(async move {
                                 let _permit = permit; // hold the permit for the duration of this task to limit concurrency
-                                let mut handler = Handler::new(store, shutdown_rx_clone);
-                                handler.run(id).await;
+                                let mut handler = Handler::new(store, shutdown_rx_clone, telemetry);
+                                handler.run(id, processing_time).await;
                             });
                         },
                         Err(e) => {

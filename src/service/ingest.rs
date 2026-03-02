@@ -4,6 +4,7 @@ use tokio::sync::{mpsc, mpsc::error::TrySendError, watch};
 use crate::ReserveResult;
 use crate::domain::{Event, EventRecord};
 use crate::store::MemoryStore;
+use crate::Telemetry;
 
 pub enum IngestResult {
     QueueError(String),
@@ -17,11 +18,17 @@ pub struct IngestService {
     pub store: MemoryStore,
     pub tx: mpsc::Sender<String>,
     pub shutdown_tx: watch::Sender<bool>,
+    pub telemetry: Telemetry,
 }
 
 impl IngestService {
-    pub fn new(store: MemoryStore, tx: mpsc::Sender<String>, shutdown_tx: watch::Sender<bool>) -> Self {
-        Self { store, tx, shutdown_tx }
+    pub fn new(
+        store: MemoryStore, 
+        tx: mpsc::Sender<String>, 
+        shutdown_tx: watch::Sender<bool>,
+        telemetry: Telemetry
+    ) -> Self {
+        Self { store, tx, shutdown_tx, telemetry }
     }
 
     pub async fn ingest(&self, event: Event) -> (EventRecord, IngestResult) {
@@ -34,6 +41,8 @@ impl IngestService {
                 return (record, IngestResult::StoreError(e.to_string()));
             }
         };
+        if inserted { self.telemetry.events_ingested.inc(); }
+        else { self.telemetry.events_deduped.inc(); }
         let event_id = record.event.event_id.clone();
         (record, self.reserve_and_schedule(event_id, inserted).await)
     }
@@ -48,7 +57,10 @@ impl IngestService {
                 // If this fails, it means the handlers are not consuming from the queue, which is a problem, 
                 // but we have already marked the record as queued, so we can just return an error and let it be retried later.
                 match self.tx.try_send(event_id.clone()) {
-                    Ok(_) => IngestResult::Ok(inserted),
+                    Ok(_) => {
+                        self.telemetry.queue_depth.inc();
+                        IngestResult::Ok(inserted)
+                    },
                     Err(TrySendError::Closed(e)) => {
                         eprintln!("Failed to enqueue event {}: {}", event_id, e);
                         self.shutdown_tx.send(true).ok(); // Signal shutdown to prevent further processing, since the queue is not working

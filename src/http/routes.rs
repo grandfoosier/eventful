@@ -1,12 +1,12 @@
-use crate::http::handlers::{get_event, /*healthz, metrics,*/ post_events, HttpState};
+use crate::http::handlers::{get_event, healthz, metrics, post_events, HttpState};
 use axum::{routing::get, routing::post, Router};
 
 pub fn router(state: std::sync::Arc<HttpState>) -> Router {
     Router::new()
         .route("/events", post(post_events))
         .route("/events/:id", get(get_event))
-        // .route("/healthz", get(healthz))
-        // .route("/metrics", get(metrics))
+        .route("/healthz", get(healthz))
+        .route("/metrics", get(metrics))
         .with_state(state)
 }
 
