@@ -58,7 +58,7 @@ impl IngestService {
                 // but we have already marked the record as queued, so we can just return an error and let it be retried later.
                 match self.tx.try_send(event_id.clone()) {
                     Ok(_) => {
-                        self.telemetry.queue_depth.inc();
+                        self.telemetry.queue_channel_depth.inc();
                         IngestResult::Ok(inserted)
                     },
                     Err(TrySendError::Closed(e)) => {
