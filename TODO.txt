@@ -1,1 +1,0 @@
-Handle inserted record that fails to enqueue
