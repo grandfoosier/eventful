@@ -49,13 +49,13 @@ pub async fn dispatch_loop(
                         Ok(permit) => {
                             let store = store.clone();
                             let telemetry = telemetry.clone();
-                            telemetry.processing_inflight.inc();
-                            let _guard = InflightGuard(telemetry.processing_inflight.clone());
                             let millis;
                             {   let mut rng = rand::rng();
                                 millis = rng.random_range(15..45); }
                             let processing_time = Duration::from_millis(millis);
                             join_set.spawn(async move {
+                                telemetry.processing_inflight.inc();
+                                let _guard = InflightGuard(telemetry.processing_inflight.clone());
                                 let _permit = permit; // hold the permit for the duration of this task to limit concurrency
                                 let mut handler = Handler::new(store, shutdown_rx_clone, telemetry);
                                 handler.run(id, processing_time).await;

@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, TimeDelta, Utc};
 use serde_json::Value;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, sync::{Arc, atomic::{AtomicI64, Ordering}}};
 use thiserror::Error;
 use tokio::sync::Mutex;
 
@@ -35,6 +35,7 @@ pub struct MemoryStore {
     inner: Arc<Mutex<HashMap<String, EventRecord>>>,
     base_backoff_ms: u64,
     max_retries: u32,
+    queued_count: Arc<AtomicI64>,
     queue_stale_time_ms: u64,
     burst_size: usize,
 }
@@ -49,6 +50,7 @@ impl MemoryStore {
         inner: Arc::new(Mutex::new(HashMap::new())),
         base_backoff_ms,
         max_retries,
+        queued_count: Arc::new(AtomicI64::new(0)),
         queue_stale_time_ms,
         burst_size,
     }}
@@ -87,6 +89,8 @@ impl MemoryStore {
            .collect()
     }
 
+    pub fn queued_count(&self) -> i64 { self.queued_count.load(Ordering::Relaxed) }
+
     pub async fn reserve_enqueue_if_needed(&self, event_id: &str, now: DateTime<Utc>) -> ReserveResult {
         let mut map = self.inner.lock().await;
         let rec = match map.get_mut(event_id) {
@@ -97,6 +101,7 @@ impl MemoryStore {
             (rec.status == EventStatus::FailedRetry && rec.retry_time.map_or(true, |rt| rt <= now));
         let enqueueable = !rec.queued || rec.queue_time.map_or(true, |qt| (now - qt) > Duration::milliseconds(self.queue_stale_time_ms as i64));
         if runnable && enqueueable {
+            if !rec.queued { self.queued_count.fetch_add(1, Ordering::Relaxed); }
             rec.queued = true;
             rec.queue_time = Some(now);
             rec.updated_at = now;
@@ -117,9 +122,10 @@ impl MemoryStore {
             {
                 rec.status = EventStatus::Processing;
                 rec.attempts = rec.attempts.saturating_add(1);
-                rec.updated_at = Utc::now();
+                if rec.queued { self.queued_count.fetch_sub(1, Ordering::Relaxed); }
                 rec.queued = false; // clear queued state when claiming for processing, so it can be re-queued if processing fails
                 rec.queue_time = None;
+                rec.updated_at = Utc::now();
                 StartResult::Start { attempt: rec.attempts, record: rec.clone() }
             } else { StartResult::SkipNotRunnable }
         }

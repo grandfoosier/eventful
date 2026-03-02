@@ -45,11 +45,17 @@ pub async fn get_event(State(state): State<Arc<HttpState>>, Path(id): Path<Strin
 }
 
 pub async fn healthz(State(state): State<Arc<HttpState>>) -> impl IntoResponse {
-    let q = state.telemetry.queue_channel_depth.get();
-    (StatusCode::OK, format!("ok - queue_channel_depth={}", q))
+    let q = state.store.queued_count();
+    state.telemetry.backlog_queued.set(q);
+    let ch = state.telemetry.queue_channel_depth.get();
+    let p = state.telemetry.processing_inflight.get();
+    (StatusCode::OK, format!(
+        "ok - queue_channel_depth={ch}, backlog_queued={q}, processing_inflight={p}"
+    ))
 }
 
 pub async fn metrics(State(state): State<Arc<HttpState>>) -> impl IntoResponse {
+    state.telemetry.backlog_queued.set(state.store.queued_count());
     let body = state.telemetry.gather();
     (StatusCode::OK, body)
 }
