@@ -33,7 +33,7 @@ impl IngestService {
 
     pub async fn ingest(&self, event: Event) -> (EventRecord, IngestResult) {
         // Try to insert into store. If it already exists, it's not an error, just return existing record.
-        let (record, insert_result) = self.store.insert_if_absent(event).await;
+        let (mut record, insert_result) = self.store.insert_if_absent(event).await;
         let inserted = match insert_result {
             Ok(inserted) => inserted,
             Err(e) => { // This means there is a hash mismatch for the same event_id, which should not happen. We treat it as an error, but still return the existing record for visibility.
@@ -44,7 +44,14 @@ impl IngestService {
         if inserted { self.telemetry.events_ingested.inc(); }
         else { self.telemetry.events_deduped.inc(); }
         let event_id = record.event.event_id.clone();
-        (record, self.reserve_and_schedule(event_id, inserted).await)
+        let ingest_result = self.reserve_and_schedule(event_id.clone(), inserted).await;
+        
+        // Fetch updated record to get the queued status after reserve_and_schedule
+        if let Ok(updated_record) = self.store.get(&event_id).await {
+            record = updated_record;
+        }
+        
+        (record, ingest_result)
     }
 
     // Try to reserve and enqueue if needed. If this fails, it's not a critical error, just means the event won't be processed until next retry/sweep.

@@ -170,4 +170,10 @@ impl MemoryStore {
         rec.updated_at = Utc::now();
         Ok(())
     }
+
+    #[cfg(test)]
+    pub async fn update_record_for_test(&self, record: EventRecord) {
+        let mut map = self.inner.lock().await;
+        map.insert(record.event.event_id.clone(), record);
+    }
 }

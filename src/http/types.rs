@@ -4,7 +4,7 @@ use serde_json::Value;
 
 use crate::domain::{event::{Event, EventPayload, EventType}, state::EventStatus};
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct EventIn {
     pub event_id: String,
     pub event_type: String,

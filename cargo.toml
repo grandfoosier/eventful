@@ -19,3 +19,5 @@ tokio = { version = "1.49.0", features = ["full"] }
 
 [dev-dependencies]
 tokio = { version = "1.49.0", features = ["full"] }
+axum-test = "14.0"
+futures = "0.3"
